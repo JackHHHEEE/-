@@ -43,66 +43,142 @@ public class EnemyManager : MonoBehaviour
     }
 
     // 🤖 AI 的回合逻辑
+    // 🤖 AI 的回合逻辑 (终极版：经济 + 战斗)
     public void ExecuteAITurn()
     {
-        Debug.Log("🤖 Bob Liu 正在思考...");
+        Debug.Log("🤖 Bob Liu 开始了回合...");
+        StartCoroutine(AITurnRoutine());
+    }
 
-        // 👇 修复 1：每回合给 AI 重新发放 4 点粮草，防止他破产！
-        currentProvision = 4;
-        UpdateUI();
+    private System.Collections.IEnumerator AITurnRoutine()
+    {
+        // ==========================================
+        // 🌾 阶段一：补给与维持 (Logistics & Provision Phase)
+        // ==========================================
+        int totalProduce = 0;
+        int totalUpkeep = 0;
 
-        // 👇 修复 2：加上这句，如果他真的没牌了，控制台会明确告诉你
-        if (enemyDeck.Count == 0)
+        // 1. 统计种田收益和工资
+        for (int i = 0; i < 3; i++)
         {
-            Debug.Log("⚠️ 报告主公！Bob Liu 的牌库已经彻底打空了！");
-            return;
-        }
-
-        // 1. 检查是否有空位
-        foreach (Transform slot in enemyFrontline)
-        {
-            if (slot.childCount == 0 && enemyDeck.Count > 0)
+            Transform slot = enemyFrontline.GetChild(i);
+            if (slot.childCount > 0)
             {
-                // 2. 模拟从牌库抽一张
-                CardData toPlay = enemyDeck[0];
-
-                // 3. 检查钱够不够
-                if (currentProvision >= toPlay.cost)
+                CardDisplay card = slot.GetChild(0).GetComponent<CardDisplay>();
+                if (card != null)
                 {
-                    currentProvision -= toPlay.cost;
-                    enemyDeck.RemoveAt(0);
-
-                    // 👇 核心修复：判断是战术卡还是单位卡！
-                    if (toPlay.type == CardType.Tactic)
-                    {
-                        Debug.Log($"🔥 敌将 Bob Liu 发动了战术卡：{toPlay.cardName}！");
-                        // 就像你之前测法术一样，让 AI 的法术固定扣你 2 滴血作为测试
-                        PlayerManager.Instance.currentHP -= 2;
-                        PlayerManager.Instance.UpdateUI();
-                    }
-                    else
-                    {
-                        // 是单位卡，才实例化并放到槽位里
-                        GameObject newCard = Instantiate(cardPrefab, slot);
-                        newCard.transform.localRotation = Quaternion.Euler(0, 0, 180);
-
-                        CardDisplay display = newCard.GetComponent<CardDisplay>();
-                        display.cardData = toPlay;
-                        display.SetupCard();
-                        display.isNewlyPlayed = true;
-
-                        Debug.Log($"🤖 Bob Liu 派出了 {toPlay.cardName}！");
-                    }
-
-                    UpdateUI();
-                    break; // 每回合 AI 只出一张
+                    totalUpkeep += card.cardData.upkeep;
+                    if (card.cardData.keyword == Keyword.Produce) totalProduce += card.cardData.produceAmount;
                 }
             }
         }
+
+        // 2. 发低保并封顶
+        int baseIncome = 4;
+        currentProvision += (baseIncome + totalProduce);
+        currentProvision = Mathf.Clamp(currentProvision, 0, 10);
+        
+        Debug.Log($"🤖 敌方发薪：获得 {baseIncome}+{totalProduce}。当前余额: {currentProvision}");
+
+        // 3. 挨个发工资，没钱就饿死！
+        for (int i = 0; i < 3; i++)
+        {
+            Transform slot = enemyFrontline.GetChild(i);
+            if (slot.childCount > 0)
+            {
+                CardDisplay card = slot.GetChild(0).GetComponent<CardDisplay>();
+                if (card != null)
+                {
+                    if (currentProvision >= card.cardData.upkeep)
+                    {
+                        currentProvision -= card.cardData.upkeep;
+                        card.isSleeping = false; // 唤醒，准备打架
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"⚠️ 敌方断粮！{card.cardData.cardName} 扣1血并罚站！");
+                        card.TakeDamage(1);
+                        if (card != null) card.isSleeping = true;
+                    }
+                }
+            }
+        }
+        UpdateUI();
+
+        // 💀 4. 破产清算 (Starvation Loss)
+        CheckStarvationLoss();
+
+        yield return new WaitForSeconds(0.5f); // 停顿一下
+
         // ==========================================
-        // 👇 敌军出完牌后，场上的老兵开始发起反击！
+        // 🃏 阶段二：行动 (Action Phase - AI 出牌)
         // ==========================================
-        Debug.Log("⚔️ 敌军吹响反击号角！");
+        if (enemyDeck.Count > 0)
+        {
+            CardData toPlay = enemyDeck[0];
+            
+            if (currentProvision >= toPlay.cost)
+            {
+                currentProvision -= toPlay.cost;
+                enemyDeck.RemoveAt(0);
+
+                if (toPlay.type == CardType.Tactic)
+                {
+                    Debug.Log($"🔥 敌将发动战术卡：{toPlay.cardName}！(此处暂用扣2血代替)");
+                    PlayerManager.Instance.TakeDamage(2);
+                }
+                else
+                {
+                    Transform emptySlot = null;
+                    foreach (Transform slot in enemyFrontline)
+                    {
+                        if (slot.childCount == 0) { emptySlot = slot; break; }
+                    }
+
+                    if (emptySlot != null)
+                    {
+                        GameObject newCard = Instantiate(cardPrefab, emptySlot);
+                        newCard.transform.localRotation = Quaternion.Euler(0, 0, 180);
+                        CardDisplay display = newCard.GetComponent<CardDisplay>();
+                        display.cardData = toPlay;
+                        display.SetupCard();
+                        display.isSleeping = true; // 刚下的兵必须睡觉 (召唤失调)
+                        
+                        if (toPlay.keyword == Keyword.Rush)
+                        {
+                            display.isSleeping = false; // 冲锋怪立刻苏醒
+                            Debug.Log($"⚡ 敌军 {toPlay.cardName} 发动突袭！");
+                        }
+                    }
+                }
+                UpdateUI();
+            }
+        }
+
+        yield return new WaitForSeconds(1f); // 停顿一下
+
+        // ==========================================
+        // ⚔️ 阶段三：战斗 (Combat Rules)
+        // ==========================================
+        Debug.Log("⚔️ 敌军发动冲锋！");
+
+        // 1. 扫描玩家是否有嘲讽怪
+        CardDisplay tauntTarget = null;
+        bool isPlayerFrontlineEmpty = true;
+        foreach (Transform pSlot in playerFrontline)
+        {
+            if (pSlot.childCount > 0)
+            {
+                isPlayerFrontlineEmpty = false; // 发现掩体
+                CardDisplay pCard = pSlot.GetChild(0).GetComponent<CardDisplay>();
+                if (pCard != null && pCard.cardData.keyword == Keyword.Taunt)
+                {
+                    tauntTarget = pCard; // 锁定嘲讽
+                }
+            }
+        }
+
+        // 2. 敌军进攻结算
         for (int i = 0; i < 3; i++)
         {
             Transform enemySlot = enemyFrontline.GetChild(i);
@@ -111,67 +187,58 @@ public class EnemyManager : MonoBehaviour
             if (enemySlot.childCount > 0)
             {
                 CardDisplay enemyCard = enemySlot.GetChild(0).GetComponent<CardDisplay>();
-                if (enemyCard == null) continue;
+                if (enemyCard == null || enemyCard.isSleeping) continue; // 睡觉的兵不打人
 
-                // 1. 检查是不是刚下的新兵？有没有冲锋？
-                if (enemyCard.isNewlyPlayed)
+                int eAtk = enemyCard.cardData.attack;
+
+                // 嘲讽强制拦截
+                if (tauntTarget != null)
                 {
-                    if (enemyCard.cardData.keyword == Keyword.Rush)
-                    {
-                        enemyCard.isNewlyPlayed = false;
-                    }
-                    else
-                    {
-                        enemyCard.isNewlyPlayed = false;
-                        continue; // 敌人的新兵也要乖乖罚站！
-                    }
+                    Debug.Log($"🛡️ 敌军被嘲讽吸引！攻击 {tauntTarget.cardData.cardName}");
+                    tauntTarget.TakeDamage(eAtk);
+                    int pAtk = tauntTarget.cardData.attack;
+                    if (pAtk > 0) enemyCard.TakeDamage(pAtk);
                 }
-
-                int enemyAtk = enemyCard.cardData.attack;
-
-                // 2. 敌军雷达：扫描你的阵地有没有 [Taunt] 嘲讽怪
-                CardDisplay tauntTarget = null;
-                foreach (Transform pSlot in playerFrontline)
+                // 正对面有兵
+                else if (playerSlot.childCount > 0)
                 {
-                    if (pSlot.childCount > 0)
-                    {
-                        CardDisplay pCard = pSlot.GetChild(0).GetComponent<CardDisplay>();
-                        if (pCard != null && pCard.cardData.keyword == Keyword.Taunt)
-                        {
-                            tauntTarget = pCard;
-                            break;
-                        }
-                    }
-                }
-
-                // 3. 敌军开打！
-                if (playerSlot.childCount > 0)
-                {
-                    // 对面有你的兵，互殴！
                     CardDisplay playerCard = playerSlot.GetChild(0).GetComponent<CardDisplay>();
-                    playerCard.TakeDamage(enemyAtk);
+                    Debug.Log($"⚔️ 敌军攻击正前方：{playerCard.cardData.cardName}");
+                    playerCard.TakeDamage(eAtk);
                     int pAtk = playerCard.cardData.attack;
                     if (pAtk > 0) enemyCard.TakeDamage(pAtk);
                 }
-                else
+                // 必须满足掩体法则才能打脸
+                else if (isPlayerFrontlineEmpty)
                 {
-                    // 对面是空的，检查有没有被你的嘲讽怪吸走
-                    if (tauntTarget != null)
-                    {
-                        tauntTarget.TakeDamage(enemyAtk);
-                        int tauntAtk = tauntTarget.cardData.attack;
-                        if (tauntAtk > 0) enemyCard.TakeDamage(tauntAtk);
-                    }
-                    else
-                    {
-                        // 狠狠打你的脸！
-                        if (enemyAtk > 0)
-                        {
-                            PlayerManager.Instance.TakeDamage(enemyAtk);
-                        }
-                    }
+                    Debug.Log($"🗡️ 敌军突破防线！攻击玩家主将！");
+                    PlayerManager.Instance.TakeDamage(eAtk);
                 }
+                
+                enemyCard.isSleeping = true; // 打完收工
             }
+        }
+
+        Debug.Log("✅ 敌方回合结束，玩家回合开始！");
+        // 如果这里有交给玩家回合的代码，写在这里
+    }
+
+    // 💀 添加破产检测机制
+    public void CheckStarvationLoss()
+    {
+        bool isBankrupt = (currentProvision <= 0);
+        bool isBoardEmpty = true;
+        for (int i = 0; i < 3; i++)
+        {
+            if (enemyFrontline.GetChild(i).childCount > 0)
+            {
+                isBoardEmpty = false; break;
+            }
+        }
+        if (isBankrupt && isBoardEmpty)
+        {
+            Debug.Log("💀 【粮绝兵败】！敌方破产，你赢了！");
+            GameManager.Instance.GameOver(true);
         }
     }
 }

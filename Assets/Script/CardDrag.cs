@@ -100,42 +100,101 @@ public class CardDrag : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDrag
 
             if (targetObj != null)
             {
-                // 情况 A：打到对面的卡牌了！
+                // 📡 提前开启雷达：扫描敌方前线 (寻找 EnemyFrontline)
+                Transform enemyFrontline = GameObject.Find("EnemyFrontline")?.transform;
+                bool hasTauntOnBoard = false;
+                bool isFrontlineEmpty = true;
+
+                if (enemyFrontline != null)
+                {
+                    foreach (Transform slot in enemyFrontline)
+                    {
+                        if (slot.childCount > 0)
+                        {
+                            isFrontlineEmpty = false; // 发现活着的敌军！掩体法则生效！
+                            
+                            CardDisplay card = slot.GetChild(0).GetComponent<CardDisplay>();
+                            if (card != null && card.cardData.keyword == Keyword.Taunt) 
+                            {
+                                hasTauntOnBoard = true; // 滴滴滴！发现嘲讽怪！
+                            }
+                        }
+                    }
+                }
+
+                // ================= 情况 A：你瞄准了对面的某张卡牌 =================
                 CardDisplay targetCard = targetObj.GetComponentInParent<CardDisplay>();
                 if (targetCard != null && targetCard.transform.parent.parent.name == "EnemyFrontline")
                 {
-                    Debug.Log($"💥 冲锋！{myDisplay.cardData.cardName} 攻击了 {targetCard.cardData.cardName}！");
+                    // 🛡️ 嘲讽拦截判定
+                    if (hasTauntOnBoard && targetCard.cardData.keyword != Keyword.Taunt)
+                    {
+                        Debug.LogWarning("🛡️ 敌方场上有【坚守/Taunt】随从！你必须优先攻击嘲讽目标！");
+                        return; // 攻击被无情取消
+                    }
 
-                    // 互相伤害 (炉石规则：打人自己也会掉血)
+                    Debug.Log($"💥 冲锋！{myDisplay.cardData.cardName} 攻击了 {targetCard.cardData.cardName}！");
+                    
+                    // 互相伤害
                     targetCard.TakeDamage(myDisplay.cardData.attack);
                     myDisplay.TakeDamage(targetCard.cardData.attack);
-
-                    // 攻击完毕，陷入沉睡，这回合不能再动了！
-                    myDisplay.isSleeping = true;
+                    
+                    myDisplay.isSleeping = true; 
                     return;
                 }
 
-                // 情况 B：打到曹操的大头贴了！
+                // ================= 情况 B：你瞄准了曹操的大头贴（打脸） =================
                 if (targetObj.name == "EnemyHeroUI" || (targetObj.transform.parent != null && targetObj.transform.parent.name == "EnemyHeroUI"))
                 {
+                    // 🛡️ 嘲讽拦截判定 (嘲讽怪也能挡住打脸)
+                    if (hasTauntOnBoard)
+                    {
+                        Debug.LogWarning("🛡️ 敌方场上有【坚守/Taunt】随从！绝对不能直接攻击主公！");
+                        return; // 攻击取消
+                    }
+
+                    // 🧱 前线掩体法则判定
+                    if (!isFrontlineEmpty)
+                    {
+                        Debug.LogWarning("🧱 前线掩体法则：敌方前线还有士兵，你必须先解决他们才能攻击主公！");
+                        return; // 攻击取消
+                    }
+
                     Debug.Log($"🗡️ 直捣黄龙！{myDisplay.cardData.cardName} 狠狠砍了 Boss Cao 一刀！");
                     EnemyManager.Instance.TakeDamage(myDisplay.cardData.attack);
-
-                    myDisplay.isSleeping = true; // 攻击完毕
+                    
+                    myDisplay.isSleeping = true; 
                     return;
                 }
             }
-
+            
             Debug.Log("💨 挥空了！请确保红线指准了对面的卡牌或武将！");
         }
         else
         {
-            // 这是手牌区的卡牌落座逻辑，保持原样...
+            // 这是手牌区的卡牌落座逻辑
             canvasGroup.blocksRaycasts = true;
+
+            // 1. 如果松开鼠标时，它还在最外层飘着，说明没放进坑里，退回手牌！
             if (transform.parent == transform.root)
             {
                 transform.SetParent(originalParent);
             }
+            // 2. 否则，如果它成功坐进了前线 (PlayerFrontline) 的坑位里：
+            else if (transform.parent != null && transform.parent.parent != null && transform.parent.parent.name == "PlayerFrontline")
+            {
+                // 💥 检查曹操大招是否处于激活状态？
+                if (PlayerManager.Instance != null && PlayerManager.Instance.isCaoCaoBuffActive)
+                {
+                    Debug.Log($"🔥 曹操大招加持！{myDisplay.cardData.cardName} 获得【突袭】，立刻苏醒！");
+                    
+                    myDisplay.isSleeping = false; // 打入突袭激素，解除睡眠状态！
+                    
+                    // 大招消耗完毕，关掉开关，防止下一张牌也免费！
+                    PlayerManager.Instance.isCaoCaoBuffActive = false; 
+                }
+            }
+    
         }
     }
 }
